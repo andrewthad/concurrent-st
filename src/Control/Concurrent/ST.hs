@@ -44,12 +44,14 @@ data ThreadId s = ThreadId ThreadId#
 --   leads to non-determinism, the function 'forkST_'
 --   is typically to be preferred.
 forkST :: ST s a -> ST s (ThreadId s)
+{-# INLINE forkST #-}
 forkST action = ST $ \s1 -> case forkST# action s1 of
   (# s2, tid #) -> (# s2, ThreadId tid #)
 
 -- | Creates a new thread to run the 'ST' computation and
 --   discard the 'ThreadId'.
 forkST_ :: ST s a -> ST s ()
+{-# INLINE forkST_ #-}
 forkST_ action = ST $ \s1 -> case forkST# action s1 of
   (# s2, _ #) -> (# s2, () #)
 
@@ -116,10 +118,11 @@ tandem a b = do
   takeMVar lock
   return x
 
+-- | Fold over a collection in parallel, discarding the results.
 traverse_ :: Foldable t => (a -> ST s b) -> t a -> ST s ()
 traverse_ f xs = do
   var <- newEmptyMVar
-  total <- foldlM (\ !n a -> forkST (f a >> putMVar var ()) >> return (n + 1)) 0 xs
+  total <- foldlM (\ !n a -> forkST_ (f a >> putMVar var ()) >> return (n + 1)) 0 xs
   replicateM_ total (takeMVar var)
 
 -- | A more performant variant of 'foldMapM' that is only valid
@@ -127,7 +130,7 @@ traverse_ f xs = do
 foldCommuteM :: (Foldable t, Monoid m) => (a -> ST s m) -> t a -> ST s m
 foldCommuteM f xs = do
   var <- newEmptyMVar
-  total <- foldlM (\ !n a -> forkST (f a >>= putMVar var) >> return (n + 1)) 0 xs
+  total <- foldlM (\ !n a -> forkST_ (f a >>= putMVar var) >> return (n + 1)) 0 xs
   let go !n !m = if (n :: Int) < total
         then takeMVar var >>= go (n + 1)
         else return m
