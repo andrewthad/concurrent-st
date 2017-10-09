@@ -5,6 +5,7 @@
 
 {-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE MagicHash #-}
+{-# LANGUAGE BangPatterns #-}
 
 {-# OPTIONS_GHC -Wall #-}
 
@@ -24,11 +25,17 @@ module Control.Concurrent.ST
   , tryPutMVar
   , isEmptyMVar
   , tryReadMVar
+    -- * Parallelism
+  , tandem
+  , traverse_
+  , foldCommuteM
   ) where
 
 import GHC.Prim
 import GHC.Exts (isTrue#)
 import GHC.ST (ST(..))
+import Data.Foldable (foldlM,Foldable)
+import Control.Monad (replicateM_)
 
 data ThreadId s = ThreadId ThreadId#
 
@@ -36,13 +43,13 @@ data ThreadId s = ThreadId ThreadId#
 --   as the argument. Since using the 'ThreadId' often
 --   leads to non-determinism, the function 'forkST_'
 --   is typically to be preferred.
-forkST :: ST s () -> ST s (ThreadId s)
+forkST :: ST s a -> ST s (ThreadId s)
 forkST action = ST $ \s1 -> case forkST# action s1 of
   (# s2, tid #) -> (# s2, ThreadId tid #)
 
 -- | Creates a new thread to run the 'ST' computation and
 --   discard the 'ThreadId'.
-forkST_ :: ST s () -> ST s ()
+forkST_ :: ST s a -> ST s ()
 forkST_ action = ST $ \s1 -> case forkST# action s1 of
   (# s2, _ #) -> (# s2, () #)
 
@@ -97,3 +104,32 @@ newMVar value = do
 
 readMVar :: MVar s a -> ST s a
 readMVar (MVar mvar#) = ST $ \ s# -> readMVar# mvar# s#
+
+-- | Execute the first computation on the main thread and
+--   the second one on another thread in parallel. Blocks
+--   until both are finished.
+tandem :: ST s a -> ST s b -> ST s a
+tandem a b = do
+  lock <- newEmptyMVar
+  forkST_ (b >> putMVar lock ())
+  x <- a
+  takeMVar lock
+  return x
+
+traverse_ :: Foldable t => (a -> ST s b) -> t a -> ST s ()
+traverse_ f xs = do
+  var <- newEmptyMVar
+  total <- foldlM (\ !n a -> forkST (f a >> putMVar var ()) >> return (n + 1)) 0 xs
+  replicateM_ total (takeMVar var)
+
+-- | A more performant variant of 'foldMapM' that is only valid
+--   for commutative monoids.
+foldCommuteM :: (Foldable t, Monoid m) => (a -> ST s m) -> t a -> ST s m
+foldCommuteM f xs = do
+  var <- newEmptyMVar
+  total <- foldlM (\ !n a -> forkST (f a >>= putMVar var) >> return (n + 1)) 0 xs
+  let go !n !m = if (n :: Int) < total
+        then takeMVar var >>= go (n + 1)
+        else return m
+  go 0 mempty
+
