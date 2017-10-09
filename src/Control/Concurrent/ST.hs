@@ -1,6 +1,6 @@
 {-| This module provides a way to use concurrent haskell
     inside of 'ST'. Using these function subverts the
-    usual guarentee we have that 'ST' is deterministic.
+    usual guarantee we have that 'ST' is deterministic.
 -}
 
 {-# LANGUAGE UnboxedTuples #-}
